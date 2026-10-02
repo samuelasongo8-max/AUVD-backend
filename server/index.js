@@ -18,7 +18,78 @@ const app = express();
    step with the dev proxy in vite.config.js, which forwards /api here. */
 const port = Number(process.env.PORT || 5000);
 
-app.use(cors());
+/* ---------------------------------------------------------------------------
+   CORS — explicit allow-list. This REPLACES the single `app.use(cors())` that
+   was here before; there is only ever one CORS middleware in this file.
+
+   The admin session is an httpOnly cookie, so the frontend sends
+   `credentials: "include"`. The cors library's default sends
+   `Access-Control-Allow-Origin: *`, and a browser REJECTS that combination
+   outright:
+
+     "The value of the 'Access-Control-Allow-Origin' header in the response must
+      not be the wildcard '*' when the request's credentials mode is 'include'."
+
+   With "*" no admin request can ever carry the session cookie, so login fails on
+   every browser. The requesting origin must therefore be echoed back by name.
+
+   ALLOWED_ORIGINS is a comma-separated list, so new deployments can be added as
+   an environment variable instead of a code change. "*" is stripped from it if
+   present, since a wildcard cannot legally be combined with credentials.
+
+   LOCAL DEVELOPMENT FALLBACK
+   ---------------------------
+   With ALLOWED_ORIGINS unset the list falls back to the Vite dev origins, named
+   and never "*", so local work keeps working out of the box.
+
+   Requests with NO Origin header (curl, health checks, server-to-server) are not
+   browser requests, so CORS does not apply to them and they pass through.
+--------------------------------------------------------------------------- */
+/* 5173 and 5175 are both in use locally: 5173 is the configured Vite port, and
+   5175 is where the dev server lands when 5173 is already taken. Both are named
+   here so a request from either is allowed without any environment variable. */
+const DEFAULT_DEV_ORIGINS = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:5175",
+  "http://127.0.0.1:5175",
+];
+
+const allowedOrigins = new Set(
+  String(process.env.ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean)
+    .filter((v) => v !== "*")
+    .map((v) => v.replace(/\/+$/, ""))
+);
+
+if (allowedOrigins.size === 0) {
+  for (const origin of DEFAULT_DEV_ORIGINS) {
+    allowedOrigins.add(origin);
+  }
+  console.log(
+    `[cors] ALLOWED_ORIGINS is not set — allowing the local dev origins only: ${[...allowedOrigins].join(", ")}`
+  );
+}
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+
+      const normalizedOrigin = origin.replace(/\/+$/, "");
+
+      if (allowedOrigins.has(normalizedOrigin)) {
+        return callback(null, true);
+      }
+
+      console.error(`[cors] refused origin: ${origin}`);
+      return callback(new Error("Origin not allowed by CORS"));
+    },
+    credentials: true,
+  })
+);
 
 /* Raw bytes for the image upload route, mounted BEFORE express.json.
    The dashboard sends the chosen File as the request body with an image/*

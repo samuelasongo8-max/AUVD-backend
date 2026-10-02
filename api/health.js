@@ -10,6 +10,16 @@
  *
  * Once the newsletter is confirmed working, delete this file.
  */
+/**
+ * Identifies WHICH build is answering.
+ *
+ * The env map below only reports whether a variable is PRESENT, and it has looked
+ * identical in every revision, so it cannot tell a freshly deployed backend from
+ * one still running an older commit. This is a fixed, non-secret string; bump it
+ * whenever deployed behaviour changes in a way that must be confirmed remotely.
+ */
+const SERVICE_VERSION = "cors-v2";
+
 export default function handler(req, res) {
   const present = (name) => {
     const value = process.env[name];
@@ -32,5 +42,15 @@ export default function handler(req, res) {
 
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
-  res.status(200).json({ ok: true, node: process.version, env });
+  /* service / version are ADDED to the existing shape; ok, node and env are all
+     still reported exactly as before. No secret is exposed - a fixed string, the
+     Node version, and boolean presence flags only. */
+  res.status(200).json({
+    ok: true,
+    service: "auvd-backend",
+    version: SERVICE_VERSION,
+    corsMode: "explicit-allowlist",
+    node: process.version,
+    env,
+  });
 }
