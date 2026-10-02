@@ -7,7 +7,7 @@ import cors from "cors";
 
 /* The one shared limit for an uploaded image, so the body parser and the route
    that validates the upload can never disagree about how big a file may be. */
-import { MAX_IMAGE_BYTES } from "../lib/imageUpload.js";
+import { MAX_IMAGE_BYTES, uploadDirectory } from "../lib/imageUpload.js";
 
 loadEnv({ path: ".env", override: false });
 loadEnv({ path: ".env.local", override: true });
@@ -88,6 +88,19 @@ app.use(
       return callback(new Error("Origin not allowed by CORS"));
     },
     credentials: true,
+  })
+);
+
+/* Serve the uploaded images. The files live in public/uploads, and nothing else
+   on this server would hand them out, so without this every uploaded image 404s
+   even with a correct absolute URL. Mounted before the /api dispatcher, and
+   read-only: it serves files, it never accepts an upload. */
+app.use(
+  "/uploads",
+  express.static(uploadDirectory(), {
+    index: false,
+    /* An uploaded file never changes, so it can be cached hard. */
+    maxAge: "30d",
   })
 );
 

@@ -37,6 +37,7 @@ import {
   checkSize,
   normaliseImage,
   writeImage,
+  publicBaseUrl,
 } from "../../lib/imageUpload.js";
 
 const log = (step, detail = "") => {
@@ -94,7 +95,9 @@ export default async function handler(req, res) {
        that is not really an image. */
     const image = await normaliseImage(body);
 
-    const saved = await writeImage(image);
+    /* The origin this request arrived on, so the stored URL is absolute and works
+       from the frontend's different domain. */
+    const saved = await writeImage({ ...image, baseUrl: publicBaseUrl(req) });
 
     /* The stored URL and the dimensions only. No filename, no bytes, no token. */
     log("stored", `${mask(email)} — ${saved.bytes} bytes, ${image.width}x${image.height}`);
