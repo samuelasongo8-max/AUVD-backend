@@ -59,7 +59,7 @@ async function listBlogs(res) {
     .collection(BLOGS_COLLECTION)
     .find(
       {},
-      { projection: { _id: 1, title: 1, content: 1, date: 1, image: 1, imageAlt: 1, createdAt: 1 } },
+      { projection: { _id: 1, title: 1, content: 1, date: 1, image: 1, imageAlt: 1, contentImage: 1, createdAt: 1 } },
     )
     .sort({ date: -1, createdAt: -1 })
     .toArray();
