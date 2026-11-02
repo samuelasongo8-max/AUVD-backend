@@ -74,7 +74,7 @@ async function listPosts(res) {
 
   const documents = await db
     .collection(POSTS_COLLECTION)
-    .find({}, { projection: { _id: 1, date: 1, topic: 1, image: 1, imageAlt: 1, caption: 1, paragraph: 1 } })
+    .find({}, { projection: { _id: 1, date: 1, topic: 1, image: 1, imagePublicId: 1, imageAlt: 1, caption: 1, paragraph: 1 } })
     .sort({ date: -1, createdAt: -1 })
     .toArray();
 

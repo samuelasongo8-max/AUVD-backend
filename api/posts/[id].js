@@ -34,6 +34,7 @@ import { ObjectId } from "mongodb";
 import { getDb, POSTS_COLLECTION, safeMessage } from "../../lib/db.js";
 import { requireAdmin, sendJson } from "../../lib/requireAdmin.js";
 import { validatePost, toPublicPost } from "../../lib/postValidation.js";
+import { deleteCloudinaryImage, extractCloudinaryPublicId } from "../../lib/cloudinary.js";
 
 const log = (step, detail = "") => {
   console.log(`[posts/:id] ${step}${detail ? ` — ${detail}` : ""}`);
@@ -78,6 +79,22 @@ export default async function handler(req, res) {
     const posts = db.collection(POSTS_COLLECTION);
 
     if (req.method === "DELETE") {
+      const current = await posts.findOne({ _id: id });
+      if (!current) {
+        return sendJson(res, 404, { ok: false, error: "Post not found" });
+      }
+      const publicId = current.imagePublicId || extractCloudinaryPublicId(current.image);
+      if (publicId) {
+        try {
+          await deleteCloudinaryImage(publicId);
+        } catch (error) {
+          log("image cleanup failed", error?.message ?? error);
+          return sendJson(res, 502, {
+            ok: false,
+            error: "The post could not be deleted because its Cloudinary image could not be removed.",
+          });
+        }
+      }
       const result = await posts.deleteOne({ _id: id });
       if (result.deletedCount === 0) {
         log("rejected", `${String(id)} not found`);
@@ -103,6 +120,11 @@ export default async function handler(req, res) {
       return sendJson(res, 400, { ok: false, error: errors[0], errors });
     }
 
+    const current = await posts.findOne({ _id: id });
+    if (!current) {
+      return sendJson(res, 404, { ok: false, error: "Post not found" });
+    }
+
     /* `$set` for the seven fields plus updatedAt only: `createdAt` is never in
        the update, so a re-save cannot rewrite when the post first appeared. */
     const result = await posts.findOneAndUpdate(
@@ -126,6 +148,21 @@ export default async function handler(req, res) {
     if (!post) {
       log("failed after save", `${String(id)} did not produce a readable post`);
       return sendJson(res, 500, SERVER_ERROR);
+    }
+
+    const oldPublicId = current.imagePublicId || extractCloudinaryPublicId(current.image);
+    const newPublicId = value.imagePublicId || extractCloudinaryPublicId(value.image);
+    if (oldPublicId && oldPublicId !== newPublicId) {
+      try {
+        await deleteCloudinaryImage(oldPublicId);
+      } catch (error) {
+        log("image cleanup failed", error?.message ?? error);
+        return sendJson(res, 502, {
+          ok: false,
+          saved: true,
+          error: "Post updated, but the previous Cloudinary image could not be removed.",
+        });
+      }
     }
 
     return sendJson(res, 200, { ok: true, post });

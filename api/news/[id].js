@@ -20,6 +20,7 @@ import { ObjectId } from "mongodb";
 import { getDb, NEWS_COLLECTION, safeMessage } from "../../lib/db.js";
 import { requireAdmin, sendJson } from "../../lib/requireAdmin.js";
 import { validateNews, toPublicNews } from "../../lib/newsValidation.js";
+import { deleteCloudinaryImage, extractCloudinaryPublicId } from "../../lib/cloudinary.js";
 
 const log = (step, detail = "") => {
   console.log(`[news/:id] ${step}${detail ? ` — ${detail}` : ""}`);
@@ -62,6 +63,22 @@ export default async function handler(req, res) {
     const news = db.collection(NEWS_COLLECTION);
 
     if (req.method === "DELETE") {
+      const current = await news.findOne({ _id: id });
+      if (!current) {
+        return sendJson(res, 404, { ok: false, error: "News item not found" });
+      }
+      const publicId = current.imagePublicId || extractCloudinaryPublicId(current.image);
+      if (publicId) {
+        try {
+          await deleteCloudinaryImage(publicId);
+        } catch (error) {
+          log("image cleanup failed", error?.message ?? error);
+          return sendJson(res, 502, {
+            ok: false,
+            error: "The news item could not be deleted because its Cloudinary image could not be removed.",
+          });
+        }
+      }
       const result = await news.deleteOne({ _id: id });
       if (result.deletedCount === 0) {
         log("rejected", `${String(id)} not found`);
@@ -87,6 +104,11 @@ export default async function handler(req, res) {
       return sendJson(res, 400, { ok: false, error: errors[0], errors });
     }
 
+    const current = await news.findOne({ _id: id });
+    if (!current) {
+      return sendJson(res, 404, { ok: false, error: "News item not found" });
+    }
+
     /* `$set` never includes createdAt, so a re-save cannot rewrite when the
        item first appeared. */
     const result = await news.findOneAndUpdate(
@@ -107,6 +129,20 @@ export default async function handler(req, res) {
     }
 
     log("updated", `${String(id)} by ${email}`);
+    const oldPublicId = current.imagePublicId || extractCloudinaryPublicId(current.image);
+    const newPublicId = value.imagePublicId || extractCloudinaryPublicId(value.image);
+    if (oldPublicId && oldPublicId !== newPublicId) {
+      try {
+        await deleteCloudinaryImage(oldPublicId);
+      } catch (error) {
+        log("image cleanup failed", error?.message ?? error);
+        return sendJson(res, 502, {
+          ok: false,
+          saved: true,
+          error: "News item updated, but the previous Cloudinary image could not be removed.",
+        });
+      }
+    }
     return sendJson(res, 200, { ok: true, news: item });
   } catch (error) {
     log("failed", safeMessage(error));

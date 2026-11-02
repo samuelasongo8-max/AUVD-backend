@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { config as loadEnv } from "dotenv";
 import express from "express";
@@ -7,7 +8,7 @@ import cors from "cors";
 
 /* The one shared limit for an uploaded image, so the body parser and the route
    that validates the upload can never disagree about how big a file may be. */
-import { MAX_IMAGE_BYTES, uploadDirectory } from "../lib/imageUpload.js";
+import { uploadDirectory } from "../lib/imageUpload.js";
 
 loadEnv({ path: ".env", override: false });
 loadEnv({ path: ".env.local", override: true });
@@ -45,12 +46,15 @@ const port = Number(process.env.PORT || 5000);
    Requests with NO Origin header (curl, health checks, server-to-server) are not
    browser requests, so CORS does not apply to them and they pass through.
 --------------------------------------------------------------------------- */
-/* 5173 and 5175 are both in use locally: 5173 is the configured Vite port, and
-   5175 is where the dev server lands when 5173 is already taken. Both are named
-   here so a request from either is allowed without any environment variable. */
+/* 5173, 5174 and 5175 are all in use locally: 5173 is the configured Vite port,
+   and 5174/5175 are where the dev server lands when that port is already taken.
+   Each is named here, with its 127.0.0.1 twin, so a request from any of them is
+   allowed without any environment variable. */
 const DEFAULT_DEV_ORIGINS = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
+  "http://localhost:5174",
+  "http://127.0.0.1:5174",
   "http://localhost:5175",
   "http://127.0.0.1:5175",
 ];
@@ -91,10 +95,8 @@ app.use(
   })
 );
 
-/* Serve the uploaded images. The files live in public/uploads, and nothing else
-   on this server would hand them out, so without this every uploaded image 404s
-   even with a correct absolute URL. Mounted before the /api dispatcher, and
-   read-only: it serves files, it never accepts an upload. */
+/* Serve legacy local-upload URLs only. New admin uploads go to Cloudinary.
+   Keep this read-only route until old database records have been migrated. */
 app.use(
   "/uploads",
   express.static(uploadDirectory(), {
@@ -102,18 +104,6 @@ app.use(
     /* An uploaded file never changes, so it can be cached hard. */
     maxAge: "30d",
   })
-);
-
-/* Raw bytes for the image upload route, mounted BEFORE express.json.
-   The dashboard sends the chosen File as the request body with an image/*
-   Content-Type, so the JSON parser below would ignore it and req.body would
-   arrive undefined. express.raw collects it as a Buffer instead.
-   Scoped to that one path, and matched on image/* only, so no other route can
-   be turned into a body-reading endpoint by a content type. The limit matches
-   MAX_IMAGE_BYTES so an oversized file is refused here rather than buffered. */
-app.use(
-  "/api/admin/upload",
-  express.raw({ type: "image/*", limit: MAX_IMAGE_BYTES })
 );
 
 app.use(express.json({ limit: "1mb" }));

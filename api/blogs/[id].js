@@ -20,6 +20,7 @@ import { ObjectId } from "mongodb";
 import { getDb, BLOGS_COLLECTION, safeMessage } from "../../lib/db.js";
 import { requireAdmin, sendJson } from "../../lib/requireAdmin.js";
 import { validateBlog, toPublicBlog } from "../../lib/blogValidation.js";
+import { deleteCloudinaryImage, extractCloudinaryPublicId } from "../../lib/cloudinary.js";
 
 const log = (step, detail = "") => {
   console.log(`[blogs/:id] ${step}${detail ? ` — ${detail}` : ""}`);
@@ -62,6 +63,23 @@ export default async function handler(req, res) {
     const blogs = db.collection(BLOGS_COLLECTION);
 
     if (req.method === "DELETE") {
+      const current = await blogs.findOne({ _id: id });
+      if (!current) {
+        return sendJson(res, 404, { ok: false, error: "Blog not found" });
+      }
+      const publicIds = [
+        current.imagePublicId || extractCloudinaryPublicId(current.image),
+        current.contentImagePublicId || extractCloudinaryPublicId(current.contentImage),
+      ].filter(Boolean);
+      try {
+        for (const publicId of new Set(publicIds)) await deleteCloudinaryImage(publicId);
+      } catch (error) {
+        log("image cleanup failed", error?.message ?? error);
+        return sendJson(res, 502, {
+          ok: false,
+          error: "The blog could not be deleted because a Cloudinary image could not be removed.",
+        });
+      }
       const result = await blogs.deleteOne({ _id: id });
       if (result.deletedCount === 0) {
         log("rejected", `${String(id)} not found`);
@@ -87,6 +105,11 @@ export default async function handler(req, res) {
       return sendJson(res, 400, { ok: false, error: errors[0], errors });
     }
 
+    const current = await blogs.findOne({ _id: id });
+    if (!current) {
+      return sendJson(res, 404, { ok: false, error: "Blog not found" });
+    }
+
     /* `$set` never includes createdAt, so a re-save cannot rewrite when the
        article first appeared. */
     const result = await blogs.findOneAndUpdate(
@@ -107,6 +130,26 @@ export default async function handler(req, res) {
     }
 
     log("updated", `${String(id)} by ${email}`);
+    const oldPublicIds = [
+      current.imagePublicId || extractCloudinaryPublicId(current.image),
+      current.contentImagePublicId || extractCloudinaryPublicId(current.contentImage),
+    ];
+    const newPublicIds = [
+      value.imagePublicId || extractCloudinaryPublicId(value.image),
+      value.contentImagePublicId || extractCloudinaryPublicId(value.contentImage),
+    ];
+    try {
+      for (const publicId of new Set(oldPublicIds.filter((id) => id && !newPublicIds.includes(id)))) {
+        await deleteCloudinaryImage(publicId);
+      }
+    } catch (error) {
+      log("image cleanup failed", error?.message ?? error);
+      return sendJson(res, 502, {
+        ok: false,
+        saved: true,
+        error: "Blog updated, but a previous Cloudinary image could not be removed.",
+      });
+    }
     return sendJson(res, 200, { ok: true, blog: item });
   } catch (error) {
     log("failed", safeMessage(error));
