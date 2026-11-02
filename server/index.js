@@ -84,7 +84,12 @@ app.use(
 
       const normalizedOrigin = origin.replace(/\/+$/, "");
 
-      if (allowedOrigins.has(normalizedOrigin)) {
+      /* Vite may choose a new local port when its default is occupied. Match
+         localhost as a hostname, not a suffix, while allowing any port. */
+      if (
+        allowedOrigins.has(normalizedOrigin) ||
+        /^https?:\/\/localhost(?::\d+)?$/i.test(normalizedOrigin)
+      ) {
         return callback(null, true);
       }
 
