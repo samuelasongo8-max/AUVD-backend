@@ -8,6 +8,19 @@ const log = (step, detail = "") => {
   console.log(`[admin/upload] ${step}${detail ? ` — ${detail}` : ""}`);
 };
 
+const safeErrorMessage = (error) => {
+  let message = error instanceof Error ? error.message : String(error ?? "Unknown upload error");
+
+  for (const name of ["CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET", "CLOUDINARY_URL"]) {
+    const value = process.env[name];
+    if (value) message = message.split(value).join("[redacted]");
+  }
+
+  return message
+    .replace(/cloudinary:\/\/[^@\s]+@/gi, "cloudinary://[redacted]@")
+    .replace(/(api_key|api_secret|signature|authorization)([=: ]+)[^&\s,;]+/gi, "$1$2[redacted]");
+};
+
 const mask = (email) => {
   const [user = "", domain = ""] = String(email).split("@");
   return `${user.slice(0, 2)}***@${domain}`;
@@ -40,7 +53,7 @@ export default async function handler(req, res) {
       if (error?.code === "UNSUPPORTED_IMAGE") {
         return sendJson(res, 415, { ok: false, error: error.message });
       }
-      log("failed", error?.message ?? error);
+      console.error(`[admin/upload] Cloudinary upload failed: ${safeErrorMessage(error)}`);
       return sendJson(res, 502, { ok: false, error: "The image could not be uploaded to Cloudinary." });
     }
 

@@ -289,22 +289,16 @@ const serveVercelFunctions = async (req, res) => {
   }
 
   try {
-    /* `headers` IS passed on explicitly, and that is the whole point of this
-       line. It is not redundant with the spread below.
-
-       In Node (and therefore Express) `req.headers` is an ACCESSOR defined on
-       the request prototype, not an own enumerable property of the instance.
-       `{ ...req }` therefore copies only the own properties — method, url,
-       socket, and so on — and silently DROPS `headers`. The auth gate in
-       lib/requireAdmin.js reads the session cookie from `req.headers.cookie`,
-       so without this the cookie never reaches the handler and EVERY protected
-       endpoint answers 401: login appears to succeed, sets its cookie, and the
-       dashboard's /api/admin/me is then told there is no session.
-
-       Naming it in the literal is the smallest fix that makes the local request
-       match what Vercel hands the same function, where req.headers is a real
-       property and always present. */
-    await handler({ ...req, headers: req.headers, body, query }, res);
+    /* Keep the real Express request: Multer needs stream methods such as
+       req.pipe() that an object spread would discard. Attach the values that
+       Vercel normally supplies while preserving IncomingMessage's prototype. */
+    req.body = body;
+    Object.defineProperty(req, "query", {
+      configurable: true,
+      enumerable: true,
+      value: query,
+    });
+    await handler(req, res);
   } catch (error) {
     /* The handlers already catch and log their own failures; this is the
        backstop for anything thrown outside their own try/catch. */
