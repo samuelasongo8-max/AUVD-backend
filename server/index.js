@@ -100,6 +100,10 @@ app.use(
   })
 );
 
+app.get("/health", (_request, response) => {
+  response.status(200).json({ status: "ok" });
+});
+
 /* Serve legacy local-upload URLs only. New admin uploads go to Cloudinary.
    Keep this read-only route until old database records have been migrated. */
 app.use(
@@ -457,3 +461,19 @@ app.listen(port, () => {
   console.log(`AUVD contact server listening on http://localhost:${port}`);
   console.log(`Vercel functions under /api served locally (same files Vercel runs)`);
 });
+
+if (process.env.RENDER === "true") {
+  const keepAliveInterval = setInterval(async () => {
+    try {
+      const response = await fetch("https://auvds-backend.onrender.com/health", {
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) {
+        console.error(`[keep-alive] health ping failed with HTTP ${response.status}`);
+      }
+    } catch (error) {
+      console.error(`[keep-alive] health ping failed: ${error.message}`);
+    }
+  }, 14 * 60 * 1000);
+  keepAliveInterval.unref();
+}
