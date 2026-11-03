@@ -47,13 +47,17 @@ export default async function handler(req, res) {
       return sendJson(res, 405, { ok: false, error: "Method not allowed" });
     }
 
+    console.log("[reports] POST started");
     const adminEmail = requireAdmin(req, res);
     if (!adminEmail) return;
+    console.log("[reports] auth accepted");
 
     let multipart;
+    stage = "multipart parsing";
     try {
       multipart = await parseReportMultipart(req, res);
     } catch (error) {
+      logFailure(stage, error);
       if (error?.code === "LIMIT_FILE_SIZE") {
         return sendJson(res, 413, { ok: false, error: "Each report file must be 20 MB or smaller." });
       }
@@ -66,27 +70,48 @@ export default async function handler(req, res) {
       return sendJson(res, 400, { ok: false, error: "The uploaded files could not be read." });
     }
 
+    const reportFields = Object.keys(multipart.body ?? {});
+    console.log(`[reports] multipart parsed; text fields: ${reportFields.join(", ") || "none"}`);
+    console.log(
+      `[reports] files: ${JSON.stringify({
+        reportFile: describeFile(multipart.reportFile),
+        reportImage: describeFile(multipart.reportImage),
+      })}`
+    );
+
     stage = "report validation";
+    console.log("[reports] validating required fields");
     const validation = validateReport(multipart.body, multipart.reportFile);
     if (!validation.ok) {
+      console.warn(`[reports] validation rejected: ${validation.error}`);
       return sendJson(res, 400, { ok: false, error: validation.error });
     }
+    console.log("[reports] validation passed");
+
     if (!cloudinaryConfigured()) {
+      console.error("[reports] Cloudinary configuration is incomplete");
       return sendJson(res, 503, { ok: false, error: "Report storage is not configured." });
     }
+    console.log("[reports] Cloudinary configuration present");
 
     const uploadedAssets = [];
     let reportAsset;
     let imageAsset = null;
     try {
       stage = "Cloudinary report upload";
+      console.log("[reports] uploading report file to Cloudinary");
       reportAsset = await uploadReportAsset(multipart.reportFile, "file");
       uploadedAssets.push({ publicId: reportAsset.public_id, resourceType: "raw" });
+      console.log("[reports] report file upload completed");
 
       if (multipart.reportImage) {
         stage = "Cloudinary image upload";
+        console.log("[reports] uploading optional image to Cloudinary");
         imageAsset = await uploadReportAsset(multipart.reportImage, "image");
         uploadedAssets.push({ publicId: imageAsset.public_id, resourceType: "image" });
+        console.log("[reports] report image upload completed");
+      } else {
+        console.log("[reports] optional image upload skipped");
       }
     } catch (error) {
       await cleanUpAssets(uploadedAssets);
@@ -96,7 +121,9 @@ export default async function handler(req, res) {
 
     try {
       stage = "MongoDB connection";
+      console.log("[reports] connecting to MongoDB");
       const db = await getDb();
+      console.log("[reports] MongoDB connection ready");
       const now = new Date();
       const document = {
         _id: new ObjectId(),
@@ -112,10 +139,13 @@ export default async function handler(req, res) {
       };
 
       stage = "MongoDB report insert";
+      console.log("[reports] inserting report document");
       await db.collection(REPORTS_COLLECTION).insertOne(document);
-      console.log(`[reports] created ${String(document._id)} by ${adminEmail}`);
+      console.log(`[reports] report document inserted: ${String(document._id)}`);
       stage = "report response serialization";
-      return sendJson(res, 201, { ok: true, report: toPublicReport(document) });
+      const report = toPublicReport(document);
+      console.log("[reports] POST completed");
+      return sendJson(res, 201, { ok: true, report });
     } catch (error) {
       await cleanUpAssets(uploadedAssets);
       throw error;
@@ -124,6 +154,16 @@ export default async function handler(req, res) {
     logFailure(stage, error);
     return sendJson(res, 500, SERVER_ERROR);
   }
+}
+
+function describeFile(file) {
+  if (!file) return "none";
+  return {
+    field: file.fieldname,
+    mimeType: file.mimetype,
+    size: file.size,
+    hasBuffer: Buffer.isBuffer(file.buffer),
+  };
 }
 
 async function listReports(res) {
