@@ -4,17 +4,7 @@ import {
   REPORTS_COLLECTION,
   safeMessage,
 } from "../../lib/db.js";
-import { cloudinaryConfigured } from "../../lib/cloudinary.js";
 import { requireAdmin, sendJson } from "../../lib/requireAdmin.js";
-import {
-  deleteReportAsset,
-  parseReportMultipart,
-  uploadReportAsset,
-} from "../../lib/reportUploads.js";
-
-export const config = {
-  api: { bodyParser: false },
-};
 
 const CATEGORIES = new Set(["annual", "financial", "activity", "other"]);
 const SERVER_ERROR = { ok: false, error: "Server error" };
@@ -52,118 +42,33 @@ export default async function handler(req, res) {
     if (!adminEmail) return;
     console.log("[reports] auth accepted");
 
-    let multipart;
-    stage = "multipart parsing";
-    try {
-      multipart = await parseReportMultipart(req, res);
-    } catch (error) {
-      logFailure(stage, error);
-      if (error?.code === "LIMIT_FILE_SIZE") {
-        return sendJson(res, 413, { ok: false, error: "Each report file must be 20 MB or smaller." });
-      }
-      if (error?.code === "LIMIT_UNEXPECTED_FILE") {
-        return sendJson(res, 400, { ok: false, error: "Upload one report file and one optional image." });
-      }
-      if (error?.code === "UNSUPPORTED_REPORT_FILE") {
-        return sendJson(res, 415, { ok: false, error: error.message });
-      }
-      return sendJson(res, 400, { ok: false, error: "The uploaded files could not be read." });
-    }
-
-    const reportFields = Object.keys(multipart.body ?? {});
-    console.log(`[reports] multipart parsed; text fields: ${reportFields.join(", ") || "none"}`);
-    console.log(
-      `[reports] files: ${JSON.stringify({
-        reportFile: describeFile(multipart.reportFile),
-        reportImage: describeFile(multipart.reportImage),
-      })}`
-    );
-
     stage = "report validation";
-    console.log("[reports] validating required fields");
-    const validation = validateReport(multipart.body, multipart.reportFile);
+    const validation = validateReport(req.body);
     if (!validation.ok) {
       console.warn(`[reports] validation rejected: ${validation.error}`);
       return sendJson(res, 400, { ok: false, error: validation.error });
     }
-    console.log("[reports] validation passed");
+    stage = "MongoDB connection";
+    const db = await getDb();
+    const now = new Date();
+    const document = {
+      _id: new ObjectId(),
+      ...validation.value,
+      createdAt: now,
+      updatedAt: now,
+    };
 
-    if (!cloudinaryConfigured()) {
-      console.error("[reports] Cloudinary configuration is incomplete");
-      return sendJson(res, 503, { ok: false, error: "Report storage is not configured." });
-    }
-    console.log("[reports] Cloudinary configuration present");
-
-    const uploadedAssets = [];
-    let reportAsset;
-    let imageAsset = null;
-    try {
-      stage = "Cloudinary report upload";
-      console.log("[reports] uploading report file to Cloudinary");
-      reportAsset = await uploadReportAsset(multipart.reportFile, "file");
-      uploadedAssets.push({ publicId: reportAsset.public_id, resourceType: "raw" });
-      console.log("[reports] report file upload completed");
-
-      if (multipart.reportImage) {
-        stage = "Cloudinary image upload";
-        console.log("[reports] uploading optional image to Cloudinary");
-        imageAsset = await uploadReportAsset(multipart.reportImage, "image");
-        uploadedAssets.push({ publicId: imageAsset.public_id, resourceType: "image" });
-        console.log("[reports] report image upload completed");
-      } else {
-        console.log("[reports] optional image upload skipped");
-      }
-    } catch (error) {
-      await cleanUpAssets(uploadedAssets);
-      logFailure(stage, error);
-      return sendJson(res, 502, { ok: false, error: "The report files could not be uploaded." });
-    }
-
-    try {
-      stage = "MongoDB connection";
-      console.log("[reports] connecting to MongoDB");
-      const db = await getDb();
-      console.log("[reports] MongoDB connection ready");
-      const now = new Date();
-      const document = {
-        _id: new ObjectId(),
-        ...validation.value,
-        reportFileUrl: reportAsset.secure_url,
-        reportFilePublicId: reportAsset.public_id,
-        reportFileName: safeOriginalName(multipart.reportFile.originalname),
-        reportFileType: multipart.reportFile.mimetype,
-        reportImageUrl: imageAsset?.secure_url ?? "",
-        reportImagePublicId: imageAsset?.public_id ?? "",
-        createdAt: now,
-        updatedAt: now,
-      };
-
-      stage = "MongoDB report insert";
-      console.log("[reports] inserting report document");
-      await db.collection(REPORTS_COLLECTION).insertOne(document);
-      console.log(`[reports] report document inserted: ${String(document._id)}`);
-      stage = "report response serialization";
-      const report = toPublicReport(document);
-      console.log("[reports] POST completed");
-      return sendJson(res, 201, { ok: true, report });
-    } catch (error) {
-      await cleanUpAssets(uploadedAssets);
-      throw error;
-    }
+    stage = "MongoDB report insert";
+    const result = await db.collection(REPORTS_COLLECTION).insertOne(document);
+    console.log(`[reports] report saved: ${String(result.insertedId)}`);
+    return sendJson(res, 201, {
+      ok: true,
+      id: String(result.insertedId),
+    });
   } catch (error) {
     logFailure(stage, error);
     return sendJson(res, 500, SERVER_ERROR);
   }
-}
-
-function describeFile(file) {
-  if (!file) return "none";
-  return {
-    field: file.fieldname,
-    mimeType: file.mimetype,
-    size: file.size,
-    hasBuffer: Buffer.isBuffer(file.buffer),
-  };
 }
 
 async function listReports(res) {
@@ -195,7 +100,7 @@ async function listReports(res) {
   return sendJson(res, 200, { ok: true, reports });
 }
 
-function validateReport(body, reportFile) {
+function validateReport(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { ok: false, error: "Invalid report details." };
   }
@@ -204,11 +109,15 @@ function validateReport(body, reportFile) {
   const category = typeof body.category === "string" ? body.category.trim() : "";
   const reportDate = typeof body.reportDate === "string" ? body.reportDate.trim() : "";
   const description = typeof body.description === "string" ? body.description.trim() : "";
+  const fileUrl = typeof body.fileUrl === "string" ? body.fileUrl.trim() : "";
+  const fileName = typeof body.fileName === "string" ? body.fileName.trim() : "";
+  const imageUrl = typeof body.imageUrl === "string" ? body.imageUrl.trim() : "";
 
   if (!title || title.length > 160) {
     return { ok: false, error: "Enter a report title of 1 to 160 characters." };
   }
-  if (!CATEGORIES.has(category)) {
+  const normalizedCategory = category || "other";
+  if (!CATEGORIES.has(normalizedCategory)) {
     return { ok: false, error: "Choose a valid report category." };
   }
   if (!isValidDate(reportDate)) {
@@ -217,14 +126,41 @@ function validateReport(body, reportFile) {
   if (description.length > 5000) {
     return { ok: false, error: "The description must be 5,000 characters or fewer." };
   }
-  if (!reportFile) {
-    return { ok: false, error: "Please upload a PDF, DOC, or DOCX report file." };
+  if (!isValidHttpUrl(fileUrl)) {
+    return { ok: false, error: "Enter a valid HTTP or HTTPS report file link." };
+  }
+  if (fileUrl.length > 2048 || imageUrl.length > 2048) {
+    return { ok: false, error: "Report links must be 2,048 characters or fewer." };
+  }
+  if (imageUrl && !isValidHttpUrl(imageUrl)) {
+    return { ok: false, error: "Enter a valid HTTP or HTTPS cover image link." };
+  }
+  if (fileName.length > 255) {
+    return { ok: false, error: "The report file name must be 255 characters or fewer." };
   }
 
   return {
     ok: true,
-    value: { title, category, reportDate, description },
+    value: {
+      title,
+      category: normalizedCategory,
+      reportDate,
+      description,
+      reportFileUrl: fileUrl,
+      reportFileName: fileName || title,
+      reportFileType: "",
+      reportImageUrl: imageUrl,
+    },
   };
+}
+
+function isValidHttpUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function isValidDate(value) {
@@ -257,16 +193,4 @@ function toPublicReport(document) {
     fileType: typeof document.reportFileType === "string" ? document.reportFileType : "",
     createdAt: document.createdAt instanceof Date ? document.createdAt.toISOString() : null,
   };
-}
-
-async function cleanUpAssets(assets) {
-  await Promise.all(
-    assets.map(async ({ publicId, resourceType }) => {
-      try {
-        await deleteReportAsset(publicId, resourceType);
-      } catch {
-        console.error("[reports] Cloudinary cleanup failed.");
-      }
-    })
-  );
 }
