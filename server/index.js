@@ -9,6 +9,7 @@ import cors from "cors";
 /* The one shared limit for an uploaded image, so the body parser and the route
    that validates the upload can never disagree about how big a file may be. */
 import { uploadDirectory } from "../lib/imageUpload.js";
+import { getDb } from "../lib/db.js";
 
 loadEnv({ path: ".env", override: false });
 loadEnv({ path: ".env.local", override: true });
@@ -451,23 +452,48 @@ app.post("/api/contact", async (request, response) => {
    unmatched under /api is handed to the real Vercel function file. */
 app.use("/api", serveVercelFunctions);
 
-app.listen(port, () => {
-  console.log(`AUVD contact server listening on http://localhost:${port}`);
-  console.log(`Vercel functions under /api served locally (same files Vercel runs)`);
-});
+const start = async () => {
+  try {
+    // Connect to MongoDB before accepting requests.
+    const db = await getDb();
+    console.log("[SERVER] DB ready ✅");
 
-if (process.env.RENDER === "true") {
-  const keepAliveInterval = setInterval(async () => {
-    try {
-      const response = await fetch("https://auvds-backend.onrender.com/health", {
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!response.ok) {
-        console.error(`[keep-alive] health ping failed with HTTP ${response.status}`);
+    app.listen(port, () => {
+      console.log(`[SERVER] Running on port ${port} ✅`);
+      console.log(`AUVD contact server listening on http://localhost:${port}`);
+      console.log(`Vercel functions under /api served locally (same files Vercel runs)`);
+    });
+
+    // Keep the MongoDB connection active and verify it can still serve requests.
+    setInterval(async () => {
+      try {
+        const currentDb = await getDb();
+        await currentDb.command({ ping: 1 });
+        console.log("[DB] keepalive ✅");
+      } catch (error) {
+        console.warn(`[DB] keepalive failed: ${error.message}`);
       }
-    } catch (error) {
-      console.error(`[keep-alive] health ping failed: ${error.message}`);
+    }, 4 * 60 * 1000);
+
+    if (process.env.RENDER === "true") {
+      const keepAliveInterval = setInterval(async () => {
+        try {
+          const response = await fetch("https://auvds-backend.onrender.com/health", {
+            signal: AbortSignal.timeout(10_000),
+          });
+          if (!response.ok) {
+            console.error(`[keep-alive] health ping failed with HTTP ${response.status}`);
+          }
+        } catch (error) {
+          console.error(`[keep-alive] health ping failed: ${error.message}`);
+        }
+      }, 14 * 60 * 1000);
+      keepAliveInterval.unref();
     }
-  }, 14 * 60 * 1000);
-  keepAliveInterval.unref();
-}
+  } catch (error) {
+    console.error(`[SERVER] Startup failed: ${error.message}`);
+    process.exit(1);
+  }
+};
+
+start();
