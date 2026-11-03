@@ -19,7 +19,25 @@ export const config = {
 const CATEGORIES = new Set(["annual", "financial", "activity", "other"]);
 const SERVER_ERROR = { ok: false, error: "Server error" };
 
+function logFailure(stage, error) {
+  const errorName = typeof error?.name === "string" ? error.name : "Error";
+  const message = safeMessage(error);
+  const stackFrames = typeof error?.stack === "string"
+    ? error.stack
+      .split("\n")
+      .slice(1, 6)
+      .map((frame) => safeMessage(frame.trim()))
+      .join(" | ")
+    : "";
+
+  console.error(
+    `[reports] ${stage} failed (${errorName}): ${message}${stackFrames ? ` | ${stackFrames}` : ""}`
+  );
+}
+
 export default async function handler(req, res) {
+  let stage = "request";
+
   try {
     if (req.method === "GET") {
       return await listReports(res);
@@ -48,6 +66,7 @@ export default async function handler(req, res) {
       return sendJson(res, 400, { ok: false, error: "The uploaded files could not be read." });
     }
 
+    stage = "report validation";
     const validation = validateReport(multipart.body, multipart.reportFile);
     if (!validation.ok) {
       return sendJson(res, 400, { ok: false, error: validation.error });
@@ -60,20 +79,23 @@ export default async function handler(req, res) {
     let reportAsset;
     let imageAsset = null;
     try {
+      stage = "Cloudinary report upload";
       reportAsset = await uploadReportAsset(multipart.reportFile, "file");
       uploadedAssets.push({ publicId: reportAsset.public_id, resourceType: "raw" });
 
       if (multipart.reportImage) {
+        stage = "Cloudinary image upload";
         imageAsset = await uploadReportAsset(multipart.reportImage, "image");
         uploadedAssets.push({ publicId: imageAsset.public_id, resourceType: "image" });
       }
-    } catch {
+    } catch (error) {
       await cleanUpAssets(uploadedAssets);
-      console.error("[reports] Cloudinary upload failed.");
+      logFailure(stage, error);
       return sendJson(res, 502, { ok: false, error: "The report files could not be uploaded." });
     }
 
     try {
+      stage = "MongoDB connection";
       const db = await getDb();
       const now = new Date();
       const document = {
@@ -89,15 +111,17 @@ export default async function handler(req, res) {
         updatedAt: now,
       };
 
+      stage = "MongoDB report insert";
       await db.collection(REPORTS_COLLECTION).insertOne(document);
       console.log(`[reports] created ${String(document._id)} by ${adminEmail}`);
+      stage = "report response serialization";
       return sendJson(res, 201, { ok: true, report: toPublicReport(document) });
     } catch (error) {
       await cleanUpAssets(uploadedAssets);
       throw error;
     }
   } catch (error) {
-    console.error(`[reports] request failed: ${safeMessage(error)}`);
+    logFailure(stage, error);
     return sendJson(res, 500, SERVER_ERROR);
   }
 }
